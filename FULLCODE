@@ -1,0 +1,174 @@
+#Pip installs
+!pip install https://github.com/soft-matter/trackpy/archive/master.zip
+!pip install pyyaml
+!pip install trackpy
+!pip install pims
+
+#import statements
+import matplotlib.pyplot as plt
+import scipy
+import looseversion
+import trackpy as tp
+import pandas as pd
+import yaml
+import numpy as np
+import pims
+from scipy.stats import linregress
+import matplotlib.animation as animation
+
+@pims.pipeline
+#pims is a a Python library that provides a single, consistent interface for reading sequential image data, video files, and multi-frame TIFF stack
+def gray(image):
+    return image[:, :, 1]  # Take just the green channel
+frames = gray(pims.open('/content/drive/MyDrive/BrownianMotion ATTEMPT1/ATTEMPT 2/Sep10 Brownian Motion 3x speed/ezgif-*.png'))
+
+frames[0]
+plt.imshow(frames[0])#First initial frame of particle indicated by frames[0]
+len(frames)
+
+frames[36].metadata
+#metadata accesses "data about data", so the data, inside the data...
+f = tp.locate(frames[0], 31, invert=True)
+#The algorithm looks for bright features; since the features in this set of images are dark, thats why it is invert is set to true
+print(f)
+
+print("Number detected:", len(f))
+print(f[['mass', 'raw_mass', 'size', 'ecc', 'signal']].describe())
+print(f['mass'].quantile(
+    [0.50, 0.75, 0.90, 0.95, 0.99, 0.995, 0.999]
+))
+
+f_filtered = f[f['mass'] > 2000]
+
+print("Remaining:", len(f_filtered))
+print(f_filtered)
+
+#annotating the track
+tp.annotate((f_filtered), frames[0]);
+
+#Checkin the accuracy (didn't help)
+tp.subpx_bias(f_filtered);
+
+tp.annotate(f_filtered, frames[200]);
+
+#batchin them
+f = tp.batch(frames[:], 31, minmass=1300, invert=True, separation = 50)
+print(f.groupby('frame').size()) 
+
+f0 = tp.locate(frames[0], 31, invert=True, minmass=800)
+f36 = tp.locate(frames[200], 31, invert=True, minmass=800)
+print(f0[['mass','size']].sort_values('mass', ascending=False).head(6))
+print(f36[['mass','size']].sort_values('mass', ascending=False).head(6))
+
+#giving each one of the particles a number for identification
+tlop0 = tp.link(f, 150, memory=6, adaptive_stop=0.5, adaptive_step=0.95)
+tlop0
+
+tlop0_filtered = tp.filter_stubs(tlop0, 40)
+print("Linked detections:", len(tlop0_filtered))
+print("Trajectories:", tlop0_filtered['particle'].nunique())
+print(tlop0_filtered.groupby('particle').size().describe())
+print(tlop0_filtered.groupby('particle').size().sort_values(ascending=False))
+
+#MEAN RMS DISPLACEMENT ERROR
+mean_ep = tlop0_clean.groupby('particle')['ep'].mean()
+print(mean_ep)
+overall_mean_ep = tlop0_clean['ep'].mean()
+overall_std_ep = tlop0_clean['ep'].std()
+print(f"Mean centroid uncertainty: {overall_mean_ep:.4f} ± {overall_std_ep:.4f} px")
+print(f"In microns: {overall_mean_ep * 1/14.77:.4f} µm")
+
+bad = [51, 9]   # particle ID(s) to drop
+
+tlop0_clean = tlop0_filtered[~tlop0_filtered['particle'].isin(bad)]
+
+#trajectory plot, Looks goodish
+plt.figure()
+tp.plot_traj(tlop0_clean);
+
+fig, ax = plt.subplots(figsize=(8, 6))
+
+
+def update(frame_idx):
+    ax.clear()
+
+    #Display current video frame throughout animation
+    ax.imshow(frames[frame_idx], cmap="gray")
+
+    #Get particle trajectory history up to current frame
+    current_tracks = tlop0_clean[
+        tlop0_clean["frame"] <= frame_idx
+    ]
+
+    # This function draws the line for each particle
+    if not current_tracks.empty:
+        for particle_id, group in current_tracks.groupby("particle"):
+            # Ensure coordinates match (cartesian)
+            ax.plot(group["x"], group["y"], lw=1.5)
+
+    ax.set_title(f"Frame {frame_idx + 1} / {len(frames)}", fontsize=12)
+    ax.set_xlabel("X (px)")
+    ax.set_ylabel("Y (px)")
+
+
+# Create animation (50 ms per frame = 5 fps)
+ani = animation.FuncAnimation(fig, update, frames=len(frames), interval=50)
+ani.save("particle_tracking_animation.gif", writer="pillow", fps=5)
+
+plt.show()
+
+dlop0 = tp.compute_drift(tlop0_clean)
+dlop0.plot()
+plt.show()
+
+tmlop0 = tp.subtract_drift(tlop0_clean.copy(), dlop0)
+imlop0 = tp.imsd(tmlop0.copy(), 1/14.77, 1/3,  max_lagtime=200)
+emlop0 = tp.emsd(tmlop0.copy(), 1/14.77, 1/3,  max_lagtime=200)
+
+n = 15   # same number of lag times used in your linregress fit
+
+table = pd.DataFrame({
+    'Time (s)': emlop0.index.values,
+    'MSD (um^2)': emlop0.values,
+})
+table['RMS displacement (um)'] = np.sqrt(table['MSD (um^2)'])
+print(table.round(3).to_string(index=False))
+
+fig, ax = plt.subplots()
+ax.plot(emlop0.index, emlop0, 'o')
+ax.plot(imlop0.index, imlop0, 'k-')
+ax.set(ylabel=r'$\langle \Delta r^2 \rangle$ ($\mu$m$^2$)',
+       xlabel='time $(t)$')
+ax.set(ylim=(0, 900));
+plt.savefig('msd v .png')
+
+time = emlop0.index.values
+msd = emlop0.values
+#linregress is a scipy module that fits two arrays of data into a straight line using least squares
+#r_value = correlation coefficient (Indicates how accurate the linear relation is between 2 variables)
+#p_value = assesses the significance of the slope (testing the null hypothesis)
+#std_err is just the standard error of the slope, a feature of linregress
+counts = tlop0_clean.groupby('particle').apply(
+    lambda t: t['frame'].max() - t['frame'].min() + 1
+)
+min_track_frames = counts.min()
+print(f"Shortest track spans {min_track_frames} frames")
+
+# only trust emsd out to that many lag steps
+max_reliable_lag = time[min_track_frames - 1] if min_track_frames <= len(time) else time[-1]
+reliable_time = time[time <= max_reliable_lag]
+reliable_msd = msd[time <= max_reliable_lag]
+
+slope, intercept, r_value, p_value, std_err = linregress(reliable_time, reliable_msd)
+diffusion_coefficient = slope / 4
+error_diffusion_coefficient = std_err / 4
+
+print(r_value)
+#Having a value very close to +1 suggests strong correlation between time and MSD
+print(p_value)
+#Having a value this low concludes that the slope is statistically significant and rejecting the null hypothesis, which supports our idea of diffusion
+print(diffusion_coefficient)
+print(error_diffusion_coefficient)
+
+from google.colab import drive
+drive.mount('/content/drive')
