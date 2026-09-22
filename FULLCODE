@@ -84,6 +84,7 @@ tlop0_clean = tlop0_filtered[~tlop0_filtered['particle'].isin(bad)]
 
 #trajectory plot, Looks goodish
 plt.figure()
+plt.title("Trajectory of 6 particles", fontsize=12)
 tp.plot_traj(tlop0_clean);
 
 fig, ax = plt.subplots(figsize=(8, 6))
@@ -118,6 +119,9 @@ ani.save("particle_tracking_animation.gif", writer="pillow", fps=5)
 plt.show()
 
 dlop0 = tp.compute_drift(tlop0_clean)
+plt.title("Total Estimated Drift of Particle")
+plt.ylabel("Cumulative Drift Displacement (px)")
+plt.xlabel("Frame Number")
 dlop0.plot()
 plt.show()
 
@@ -139,7 +143,13 @@ ax.plot(emlop0.index, emlop0, 'o')
 ax.plot(imlop0.index, imlop0, 'k-')
 ax.set(ylabel=r'$\langle \Delta r^2 \rangle$ ($\mu$m$^2$)',
        xlabel='time $(t)$')
+ax.errorbar(emlop0.index.values, emlop0.values,
+            yerr=0.0001, xerr=0.07,
+            fmt='none', capsize=0, ecolor='gray', markerfacecolor='C0', label='data')
+t_flabel = r'$D$ = (0.137 $\pm$ 0.075) $\frac{\mu m^2}{s}$'
+ax.text(0, 700, t_flabel, color = "Black",fontsize = "11")
 ax.set(ylim=(0, 900));
+ax.set_title("Mean Squared Displacement (MDS) VS Time", fontsize=12)
 plt.savefig('msd v .png')
 
 time = emlop0.index.values
